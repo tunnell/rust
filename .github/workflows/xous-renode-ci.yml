@@ -1,0 +1,158 @@
+# On-target std::fs regression suite, run against THIS repo's libstd.
+#
+# The betrusted-io/xous-core suite (services/pddb-fs-tests, PR #909) exercises
+# the real std::fs path on a Renode-emulated Precursor. Half of what it pins
+# lives in this repo (library/std/src/sys/fs/xous.rs), so a push here that
+# changes std behavior should show up here, at push time, not after a toolkit
+# release ships. This workflow reuses the exact libstd build from
+# rust-xous-release.yml to populate the sysroot (~3 min, no bootstrap), then
+# checks out xous-core at a PINNED rev and runs its image build + robot suite.
+#
+# Reading a red run: FAIL = a std behavior regression; XPASS ("unexpected
+# pass -- update the XFAIL registry") = this push FIXED a bug the registry
+# pins. Both are the desired signal; an XPASS is resolved by updating the
+# registry in xous-core and bumping XOUS_CORE_REV here in the same change.
+#
+# Whole run is ~45-90 runner-minutes (image build dominates), so triggers are
+# scoped to the version branches and tags rather than every push.
+
+name: Xous Renode CI
+
+on:
+  # workflow_dispatch only makes sense from a version branch: the rustc
+  # version is derived from the ref name (dispatching on e.g. `master` dies
+  # at rustup install).
+  workflow_dispatch:
+  push:
+    branches:
+      - '[0-9]*.[0-9]*.[0-9]*-xous'
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*.[0-9]*'
+
+env:
+  # The xous-core repo + rev whose suite + XFAIL registry this repo is tested
+  # against. Bump DELIBERATELY, together with registry updates (see header).
+  XOUS_CORE_REPO: tunnell/xous-core  # TEST value; upstream PR uses betrusted-io/xous-core
+  XOUS_CORE_REV: 98f67b6da8e1926a49d69964d9b4351652a00677  # TEST value; the xous-core PR #909 tip
+
+concurrency:
+  group: xous-renode-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  renode-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      # ---- libstd: same steps as rust-xous-release.yml ----
+      - name: Setup riscv gnu/gcc toolchain
+        uses: gregdavill/setup-riscv-gnu-toolchain@v1.0
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Determine Rust version
+        shell: bash
+        run: echo "version=$(echo ${GITHUB_REF} | cut -d/ -f3 | cut -d- -f1 | cut -d. -f1,2,3)" >> $GITHUB_OUTPUT
+        id: extract_rust_version
+
+      - name: Install Rust toolchain v${{ steps.extract_rust_version.outputs.version }}
+        run: |
+          rustup toolchain install ${{ steps.extract_rust_version.outputs.version }} --profile minimal
+          rustup default ${{ steps.extract_rust_version.outputs.version }}
+          rustup target add riscv32imac-unknown-none-elf
+
+      - name: Install riscv32imac-unknown-xous-elf toolchain file
+        run: |
+          rm -rf $(rustc --print sysroot)/lib/rustlib/riscv32imac-unknown-xous-elf \
+          && mkdir -p $(rustc --print sysroot)/lib/rustlib/riscv32imac-unknown-xous-elf/lib \
+          && rustc --version | awk '{print $2}' > $(rustc --print sysroot)/lib/rustlib/riscv32imac-unknown-xous-elf/RUST_VERSION
+
+      - name: Build Rust libstd for Xous
+        run: |
+          export RUST_COMPILER_RT_ROOT=$(pwd)/src/llvm-project/compiler-rt \
+          && rm -rf target \
+          && cargo build \
+            --target riscv32imac-unknown-xous-elf \
+            -Zbinary-dep-depinfo \
+            --release \
+            --features "panic-unwind compiler-builtins-c compiler-builtins-mem" \
+            --manifest-path "library/sysroot/Cargo.toml" \
+          && cp library/target/riscv32imac-unknown-xous-elf/release/deps/*.rlib $(rustc --print sysroot)/lib/rustlib/riscv32imac-unknown-xous-elf/lib
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: 0
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
+          CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: false
+          RUSTC_BOOTSTRAP: 1
+          RUSTFLAGS: -Cforce-unwind-tables=yes -Cembed-bitcode=yes -Zforce-unstable-if-unmarked
+          __CARGO_DEFAULT_LIB_METADATA: stablestd
+          CC: riscv-none-embed-gcc
+          AR: riscv-none-embed-ar
+
+      # ---- suite: same steps as xous-core's pddb-renode-ci.yml ----
+      # The sysroot now carries the just-built toolkit with a matching
+      # RUST_VERSION, so xtask uses it as-is; install-toolkit is NOT called
+      # (it would look for a published release, which this push predates).
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libxkbcommon-dev
+
+      - name: Checkout xous-core (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.XOUS_CORE_REPO }}
+          ref: ${{ env.XOUS_CORE_REV }}
+          path: xous-core
+          fetch-depth: 0   # xtask stamps the image via git describe (needs tags)
+
+      - name: Build the pddb-fs-ci renode image
+        working-directory: xous-core
+        run: cargo xtask pddb-fs-ci --no-verify
+
+      # Same pinned dated Renode build as xous-core's workflow -- keep the two
+      # in lockstep so emulator changes never masquerade as std changes.
+      - name: Download and extract Renode portable
+        run: |
+          RENODE_TARBALL="renode-1.16.1+20260417git9d55b4e69.linux-portable-dotnet.tar.gz"
+          curl --fail --location --retry 5 -o /tmp/renode.tar.gz \
+            "https://dl.antmicro.com/projects/renode/builds/${RENODE_TARBALL}"
+          mkdir -p "$HOME/renode_portable"
+          tar -xzf /tmp/renode.tar.gz --strip-components=1 -C "$HOME/renode_portable"
+          echo "$HOME/renode_portable" >> "$GITHUB_PATH"
+          "$HOME/renode_portable/renode" --version
+
+      - name: Install renode-test python requirements
+        run: python3 -m pip install -r "$HOME/renode_portable/tests/requirements.txt"
+
+      - name: Provision fresh 0xFF flash backing file
+        working-directory: xous-core
+        run: |
+          mkdir -p target/pddb-fs-ci
+          python3 -c "open('target/pddb-fs-ci/flash-robot.bin','wb').write(b'\xff'*134217728)"
+
+      - name: Run the PDDB std::fs robot suite
+        timeout-minutes: 75
+        working-directory: xous-core
+        env:
+          RENODE_CI_MODE: "YES"
+        run: |
+          renode-test -r "$GITHUB_WORKSPACE/renode-results" \
+            emulation/tests/pddb-fs.robot
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xous-renode-ci-results
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            renode-results/robot_output.xml
+            renode-results/log.html
+            renode-results/report.html
+            renode-results/logs/
+            xous-core/target/pddb-fs-ci/console-robot.log
+            xous-core/target/pddb-fs-ci/kernel-robot.log
