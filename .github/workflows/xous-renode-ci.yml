@@ -33,7 +33,7 @@ env:
   # The xous-core repo + rev whose suite + XFAIL registry this repo is tested
   # against. Bump DELIBERATELY, together with registry updates (see header).
   XOUS_CORE_REPO: tunnell/xous-core  # TEST value; upstream PR uses betrusted-io/xous-core
-  XOUS_CORE_REV: 7315565a84597098698b9c54d4e0ce6c919d0473  # TEST value; PR #909 tip with renode_report.py
+  XOUS_CORE_REV: 7cf45c880c69a05d97810da7b128968a65bd8ab4  # TEST value; PR #909 tip
 
 concurrency:
   group: xous-renode-ci-${{ github.ref }}
@@ -146,19 +146,24 @@ jobs:
           renode-test -r "$GITHUB_WORKSPACE/renode-results" \
             emulation/tests/pddb-fs.robot
 
-      # Gather the UART logs (they live under RUNNER_TEMP) next to the robot
-      # output, render the actual per-test results into a standalone offline
-      # HTML (the robot report is one test case + pulls Google Fonts), and
-      # strip the web-font @import from robot's HTML so the whole artifact
-      # opens offline.
+      # Render the ACTUAL per-test results from the console sentinels (robot's
+      # own report is one test case + pulls Google Fonts): (1) Markdown into
+      # $GITHUB_STEP_SUMMARY so it shows on the run's Summary page with no
+      # download; (2) a standalone offline HTML for the artifact. Also gather
+      # the UART logs and strip the web-font @import from robot's HTML so the
+      # whole artifact opens offline.
       - name: Collect logs and render per-test report
         if: always()
         run: |
           mkdir -p "$GITHUB_WORKSPACE/renode-results"
           XC="${{ runner.temp }}/xous-core"
-          cp "$XC"/target/pddb-fs-ci/console-robot.log "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
-          cp "$XC"/target/pddb-fs-ci/kernel-robot.log  "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
-          python3 "$XC/tools/renode_report.py" "$XC/target/pddb-fs-ci/console-robot.log" \
+          LOG="$XC/target/pddb-fs-ci/console-robot.log"
+          cp "$LOG" "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
+          cp "$XC"/target/pddb-fs-ci/kernel-robot.log "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
+          python3 "$XC/tools/renode_report.py" "$LOG" --format md \
+            -o "$GITHUB_WORKSPACE/renode-results/summary.md" || true
+          cat "$GITHUB_WORKSPACE/renode-results/summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 "$XC/tools/renode_report.py" "$LOG" \
             -o "$GITHUB_WORKSPACE/renode-results/test-report.html" || true
           find "$GITHUB_WORKSPACE/renode-results" -name '*.html' -exec \
             sed -i 's#@import url("https://fonts.googleapis.com[^"]*");##g' {} + || true
