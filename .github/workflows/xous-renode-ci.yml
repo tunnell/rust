@@ -100,16 +100,20 @@ jobs:
           sudo apt update
           sudo apt install -y libxkbcommon-dev
 
-      - name: Checkout xous-core (pinned)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.XOUS_CORE_REPO }}
-          ref: ${{ env.XOUS_CORE_REV }}
-          path: xous-core
-          fetch-depth: 0   # xtask stamps the image via git describe (needs tags)
+      # NOT actions/checkout with `path: <subdir>`: that nests xous-core inside
+      # the rust checkout, whose root Cargo.toml is a [workspace], and cargo then
+      # refuses to build xous-core crates that aren't members of it ("current
+      # package believes it's in a workspace when it's not"). Cloning into
+      # RUNNER_TEMP keeps it clear of any parent workspace. Full clone (history +
+      # tags) so xtask's `git describe` image stamp resolves.
+      - name: Clone xous-core (pinned, outside the rust workspace)
+        run: |
+          git clone "https://github.com/${XOUS_CORE_REPO}.git" "${{ runner.temp }}/xous-core"
+          git -C "${{ runner.temp }}/xous-core" checkout "${XOUS_CORE_REV}"
+          git -C "${{ runner.temp }}/xous-core" log --oneline -1
 
       - name: Build the pddb-fs-ci renode image
-        working-directory: xous-core
+        working-directory: ${{ runner.temp }}/xous-core
         run: cargo xtask pddb-fs-ci --no-verify
 
       # Same pinned dated Renode build as xous-core's workflow -- keep the two
@@ -128,19 +132,30 @@ jobs:
         run: python3 -m pip install -r "$HOME/renode_portable/tests/requirements.txt"
 
       - name: Provision fresh 0xFF flash backing file
-        working-directory: xous-core
+        working-directory: ${{ runner.temp }}/xous-core
         run: |
           mkdir -p target/pddb-fs-ci
           python3 -c "open('target/pddb-fs-ci/flash-robot.bin','wb').write(b'\xff'*134217728)"
 
       - name: Run the PDDB std::fs robot suite
         timeout-minutes: 75
-        working-directory: xous-core
+        working-directory: ${{ runner.temp }}/xous-core
         env:
           RENODE_CI_MODE: "YES"
         run: |
           renode-test -r "$GITHUB_WORKSPACE/renode-results" \
             emulation/tests/pddb-fs.robot
+
+      # Gather the UART logs (they live under RUNNER_TEMP) next to the robot
+      # output so a single artifact captures everything.
+      - name: Collect UART logs
+        if: always()
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/renode-results"
+          cp "${{ runner.temp }}"/xous-core/target/pddb-fs-ci/console-robot.log \
+             "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
+          cp "${{ runner.temp }}"/xous-core/target/pddb-fs-ci/kernel-robot.log \
+             "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
 
       - name: Upload results
         if: always()
@@ -149,10 +164,4 @@ jobs:
           name: xous-renode-ci-results
           if-no-files-found: warn
           retention-days: 14
-          path: |
-            renode-results/robot_output.xml
-            renode-results/log.html
-            renode-results/report.html
-            renode-results/logs/
-            xous-core/target/pddb-fs-ci/console-robot.log
-            xous-core/target/pddb-fs-ci/kernel-robot.log
+          path: renode-results/
