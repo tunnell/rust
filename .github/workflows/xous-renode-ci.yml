@@ -33,7 +33,7 @@ env:
   # The xous-core repo + rev whose suite + XFAIL registry this repo is tested
   # against. Bump DELIBERATELY, together with registry updates (see header).
   XOUS_CORE_REPO: tunnell/xous-core  # TEST value; upstream PR uses betrusted-io/xous-core
-  XOUS_CORE_REV: 98f67b6da8e1926a49d69964d9b4351652a00677  # TEST value; the xous-core PR #909 tip
+  XOUS_CORE_REV: 7315565a84597098698b9c54d4e0ce6c919d0473  # TEST value; PR #909 tip with renode_report.py
 
 concurrency:
   group: xous-renode-ci-${{ github.ref }}
@@ -147,15 +147,21 @@ jobs:
             emulation/tests/pddb-fs.robot
 
       # Gather the UART logs (they live under RUNNER_TEMP) next to the robot
-      # output so a single artifact captures everything.
-      - name: Collect UART logs
+      # output, render the actual per-test results into a standalone offline
+      # HTML (the robot report is one test case + pulls Google Fonts), and
+      # strip the web-font @import from robot's HTML so the whole artifact
+      # opens offline.
+      - name: Collect logs and render per-test report
         if: always()
         run: |
           mkdir -p "$GITHUB_WORKSPACE/renode-results"
-          cp "${{ runner.temp }}"/xous-core/target/pddb-fs-ci/console-robot.log \
-             "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
-          cp "${{ runner.temp }}"/xous-core/target/pddb-fs-ci/kernel-robot.log \
-             "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
+          XC="${{ runner.temp }}/xous-core"
+          cp "$XC"/target/pddb-fs-ci/console-robot.log "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
+          cp "$XC"/target/pddb-fs-ci/kernel-robot.log  "$GITHUB_WORKSPACE/renode-results/" 2>/dev/null || true
+          python3 "$XC/tools/renode_report.py" "$XC/target/pddb-fs-ci/console-robot.log" \
+            -o "$GITHUB_WORKSPACE/renode-results/test-report.html" || true
+          find "$GITHUB_WORKSPACE/renode-results" -name '*.html' -exec \
+            sed -i 's#@import url("https://fonts.googleapis.com[^"]*");##g' {} + || true
 
       - name: Upload results
         if: always()
