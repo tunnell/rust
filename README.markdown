@@ -2,6 +2,24 @@
 
 Build stable Rust binaries for Xous! This release targets Rust 1.97.0.
 
+## Why this is a separate fork
+
+The `riscv32imac-unknown-xous-elf` target lives upstream in rust-lang/rust, but
+it is a [Tier 3 target](https://doc.rust-lang.org/rustc/platform-support.html) —
+Rust ships no pre-compiled artifacts for it, so `rustup target add` alone gives
+you no usable `std`. This fork's main job is to build and distribute that `std`:
+each stable Rust release gets a `<version>-xous` branch whose CI builds the
+library and publishes it as a versioned release zip
+(`riscv32imac-unknown-xous_<version>.zip`) that you unzip into your sysroot (see
+below).
+
+It also carries the Xous-specific `std` pieces that aren't upstream yet — the
+PDDB-backed filesystem backend (`library/std/src/sys/fs/xous.rs`), the path
+backend (`library/std/src/sys/path/xous.rs`), and the `std::os::xous`
+extensions. Against the matching upstream release, a `<version>-xous` branch is
+only those few commits ahead and nothing behind; it is rebased forward for each
+new Rust version.
+
 ## Installing Prebuilt Releases
 
 1. Ensure you are running Rust 1.97.0. Future versions of Rust will need a different version of this software.
