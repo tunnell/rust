@@ -1,27 +1,19 @@
-std: xous: decode TCP connect errors from the NetError code byte
+std: xous: saturate the TCP connect timeout instead of truncating it
 
-connect_timeout read the error code out of reply byte 0, but that byte
-is the server's error marker flag: it is always 1 on failure, and 1 is
-also NetError::Unaddressable's value, so every failed connect --
-refused, timed out, or genuinely unaddressable -- surfaced as
-AddrNotAvailable ("invalid address").
+sockaddr_to_buf encoded the connect timeout with duration.as_millis() as
+u64, so any timeout longer than u64::MAX milliseconds wrapped to an
+arbitrary wire value: Duration::MAX happens to land on exactly u64::MAX,
+but nearby oversized values can truncate to a tiny timeout or to 0,
+which the net server reads as "no timeout at all".
 
-Read the code from byte 4 instead, which carries it in both the
-historical reply layout and the current one (the same position the tx
-path already decodes), and extend the mapping: NetError::TimedOut now
-surfaces as ErrorKind::TimedOut and the server's new ConnectionRefused
-code (10) as ErrorKind::ConnectionRefused, with unknown codes still
-falling through to InvalidInput. The client-side NetError copy gains the
-ConnectionRefused = 10 variant to stay synchronized with
-services/net/src/api.rs. Up-front failures (0.0.0.0, IPv6) still carry
-Unaddressable at byte 4 and decode as AddrNotAvailable, unchanged.
+Convert with u64::try_from and saturate to u64::MAX on overflow, the
+same saturate-into-the-wire-domain approach the unix backend applied to
+its connect timeout in rust#112405. The encoding for Duration::MAX and
+for every realistic timeout is unchanged; the companion net-server clamp
+keeps any u64 wire value from overflowing smoltcp's microsecond domain.
 
-Validated under Renode by the net-tests suite:
-smoke::tcp_connect_refused flips from expected-failure to pass together
-with the server-side refused classification, and
-concur::second_connect_while_unaccepted,
-tcp::tcp_connect_to_dropped_listener_refused, and
-timeouts::tcp_connect_timeout_fires re-pin from AddrNotAvailable to the
-contract kinds on the same image.
+Validated under Renode by the net-tests suite: the timeouts theme stays
+green with this client, and tcp::tcp_connect_timeout_duration_max_ok
+flips via the server-side clamp it pairs with.
 
 Assisted-by: Fable 5

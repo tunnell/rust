@@ -44,7 +44,11 @@ fn sockaddr_to_buf(duration: Duration, addr: &SocketAddr, buf: &mut [u8]) {
     let port_bytes = addr.port().to_le_bytes();
     buf[0] = port_bytes[0];
     buf[1] = port_bytes[1];
-    for (dest, src) in buf[2..].iter_mut().zip((duration.as_millis() as u64).to_le_bytes()) {
+    // Saturate rather than truncate: a duration longer than u64::MAX
+    // milliseconds would otherwise wrap to an arbitrary wire value, possibly
+    // 0, which the server reads as "no timeout".
+    let timeout_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    for (dest, src) in buf[2..].iter_mut().zip(timeout_ms.to_le_bytes()) {
         *dest = src;
     }
     match addr.ip() {
