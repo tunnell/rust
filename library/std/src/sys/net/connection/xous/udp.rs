@@ -178,10 +178,12 @@ impl UdpSocket {
                 } else {
                     return Err(io::const_error!(io::ErrorKind::Other, "library error"));
                 };
-                for (&s, d) in rr[22..22 + rxlen as usize].iter().zip(buf.iter_mut()) {
-                    *d = s;
-                }
-                Ok((rxlen as usize, addr))
+                // The reply carries the full datagram length: copy what fits, discard the
+                // excess (the server already dequeued it), per POSIX recvfrom truncation.
+                // Bounding by the reply page keeps a corrupt length from slicing out of range.
+                let n = (rxlen as usize).min(buf.len()).min(rr.len() - 22);
+                buf[..n].copy_from_slice(&rr[22..22 + n]);
+                Ok((n, addr))
             }
         } else {
             Err(io::const_error!(io::ErrorKind::InvalidInput, "unable to recv"))

@@ -1,0 +1,24 @@
+std: xous: return the bytes written from UDP recv, not the datagram length
+
+recv_inner copies at most min(rxlen, buf.len()) bytes into the caller's
+buffer but returns rxlen, the server-reported length of the full
+datagram, so receiving a 100-byte datagram into a 10-byte buffer
+returns Ok(100) and callers that slice &buf[..n] panic or read past the
+data they were given. recv, recv_from, peek, and peek_from all funnel
+through recv_inner and misreport identically.
+
+Clamp the returned count to the bytes actually written, bounded by both
+the caller's buffer and the reply page, which also stops a corrupt
+server-reported length from slicing beyond the 4096-byte reply. The
+excess is discarded, matching POSIX recvfrom truncation semantics; the
+server has already dequeued the whole datagram either way. A peek into
+a short buffer now also returns the truncated count while the full
+datagram stays queued, consistent with MSG_PEEK.
+
+Validated under Renode by the net-tests suite:
+udp::udp_recv_buffer_smaller_than_datagram flips from expected-failure
+to pass on images built with this client, and the rest of the udp theme
+(udp_peek_from_does_not_consume, udp_two_sockets_interleaved) stays
+green.
+
+Assisted-by: Fable 5
