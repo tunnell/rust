@@ -1,24 +1,22 @@
-std: xous: return the bytes written from UDP recv, not the datagram length
+std: xous: carry the nonblocking flag on TCP send requests
 
-recv_inner copies at most min(rxlen, buf.len()) bytes into the caller's
-buffer but returns rxlen, the server-reported length of the full
-datagram, so receiving a 100-byte datagram into a 10-byte buffer
-returns Ok(100) and callers that slice &buf[..n] panic or read past the
-data they were given. recv, recv_from, peek, and peek_from all funnel
-through recv_inner and misreport identically.
+set_nonblocking is client-side state that is encoded onto the rx, peek,
+and accept requests as opcode bit 15, but StdTcpTx never carried it, so
+the net server cannot tell a nonblocking write from a blocking one: once
+the send buffer is full it parks the request in tcp_tx_waiting with no
+expiry, and a nonblocking write hangs indefinitely instead of failing
+with WouldBlock.
 
-Clamp the returned count to the bytes actually written, bounded by both
-the caller's buffer and the reply page, which also stops a corrupt
-server-reported length from slicing beyond the 4096-byte reply. The
-excess is discarded, matching POSIX recvfrom truncation semantics; the
-server has already dequeued the whole datagram either way. A peek into
-a short buffer now also returns the truncated count while the full
-datagram stays queued, consistent with MSG_PEEK.
+Add the nonblocking bool to NetLendMut::StdTcpTx, mirroring the existing
+StdTcpPeek and StdTcpRx arms, and pass the socket's nonblocking state in
+TcpStream::write. The reply decode already maps the server's WouldBlock
+code, so no decode changes are needed. A server that predates the tx-
+side flag masks bit 15 off the opcode and behaves exactly as today, so
+the change is inert until both sides ship.
 
 Validated under Renode by the net-tests suite:
-udp::udp_recv_buffer_smaller_than_datagram flips from expected-failure
-to pass on images built with this client, and the rest of the udp theme
-(udp_peek_from_does_not_consume, udp_two_sockets_interleaved) stays
-green.
+errors::tcp_nonblocking_write_wouldblock flips from expected-failure to
+pass on images pairing this client with a net server that honors the
+flag on the tx path.
 
 Assisted-by: Fable 5

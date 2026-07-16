@@ -255,7 +255,8 @@ impl TcpStream {
 
         let (_offset, _valid) = crate::os::xous::ffi::lend_mut(
             services::net_server(),
-            services::NetLendMut::StdTcpTx(self.fd).into(),
+            services::NetLendMut::StdTcpTx(self.fd, self.nonblocking.load(Ordering::Relaxed))
+                .into(),
             &mut send_request.raw,
             // Reuse the offset as the timeout
             self.write_timeout.load(Ordering::Relaxed) as usize,

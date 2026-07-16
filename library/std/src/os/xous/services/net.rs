@@ -17,7 +17,7 @@ pub(crate) enum NetBlockingScalar {
 
 pub(crate) enum NetLendMut {
     StdTcpConnect,                                    /* 30 */
-    StdTcpTx(u16 /* fd */),                           /* 31 */
+    StdTcpTx(u16 /* fd */, bool /* nonblocking */),   /* 31 */
     StdTcpPeek(u16 /* fd */, bool /* nonblocking */), /* 32 */
     StdTcpRx(u16 /* fd */, bool /* nonblocking */),   /* 33 */
     StdGetAddress(u16 /* fd */),                      /* 35 */
@@ -32,7 +32,9 @@ impl Into<usize> for NetLendMut {
     fn into(self) -> usize {
         match self {
             NetLendMut::StdTcpConnect => 30,
-            NetLendMut::StdTcpTx(fd) => 31 | ((fd as usize) << 16),
+            NetLendMut::StdTcpTx(fd, nonblocking) => {
+                31 | ((fd as usize) << 16) | if nonblocking { 0x8000 } else { 0 }
+            }
             NetLendMut::StdTcpPeek(fd, blocking) => {
                 32 | ((fd as usize) << 16) | if blocking { 0x8000 } else { 0 }
             }
