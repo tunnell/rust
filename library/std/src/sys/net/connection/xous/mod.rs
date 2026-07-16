@@ -23,6 +23,7 @@ enum NetError {
     // AlreadyUsed = 7,
     TimedOut = 8,
     WouldBlock = 9,
+    ConnectionRefused = 10,
 }
 
 #[repr(C, align(4096))]

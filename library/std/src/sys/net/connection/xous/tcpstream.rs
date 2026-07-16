@@ -106,12 +106,21 @@ impl TcpStream {
         // for an error.
         let response = connect_request.raw;
         if response[0] != 0 || valid == 0 {
-            // errcode is a u8 but stuck in a u16 where the upper byte is invalid. Mask & decode accordingly.
-            let errcode = response[0];
+            // Byte 0 is the error-marker flag (always 1 on failure, aliasing
+            // NetError::Unaddressable); the NetError code is at byte 4 in both the
+            // historical and current server reply layouts.
+            let errcode = response[4];
             if errcode == NetError::SocketInUse as u8 {
                 return Err(io::const_error!(io::ErrorKind::ResourceBusy, "socket in use"));
             } else if errcode == NetError::Unaddressable as u8 {
                 return Err(io::const_error!(io::ErrorKind::AddrNotAvailable, "invalid address"));
+            } else if errcode == NetError::TimedOut as u8 {
+                return Err(io::const_error!(io::ErrorKind::TimedOut, "connection timed out"));
+            } else if errcode == NetError::ConnectionRefused as u8 {
+                return Err(io::const_error!(
+                    io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                ));
             } else {
                 return Err(io::const_error!(
                     io::ErrorKind::InvalidInput,
